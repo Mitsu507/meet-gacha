@@ -61,6 +61,28 @@ assert.ok(L.likelyOpen(night[0], at(20, 59)) && !L.likelyOpen(night[0], at(21, 1
 assert.ok(!L.likelyOpen(night[2], at(12))); // 술집 낮엔 X
 assert.strictEqual(L.scoreCandidates(night, { ...base, purpose: 'cafe', now: at(23) }).length, 2);
 
+// 실제 영업시간 (OSM opening_hours)
+const H = L.parseHours;
+assert.deepStrictEqual(H('24/7')[3], [[0, 1440]]);
+assert.deepStrictEqual(H('10:00-23:00')[6], [[600, 1380]]);
+let w = H('Mo-Fr 09:00-21:00; Sa,Su 10:00-22:00; Mo off');
+assert.deepStrictEqual([w[0], w[1], w[5]], [[], [[540, 1260]], [[600, 1320]]]);
+w = H('Tu-Su,PH 12:00-23:00');
+assert.deepStrictEqual([w[0], w[1]], [[], [[720, 1380]]]);
+assert.strictEqual(H('10:00-23:00; Su[2,4] off'), null); // 복잡한 형식은 추정으로
+assert.strictEqual(H('Mo-Fr 07:00,07:20'), null);        // 버스 시간표 등
+w = H('Mo-Su 18:00-02:00');                                // 새벽까지
+assert.ok(L.openRange(w, at(1), 60));                     // 일요일 새벽 1시 (토요일 밤부터 이어짐)
+assert.ok(!L.openRange(w, at(1, 30), 60));               // 1시간 안에 닫음
+// 2026-09-27 = 일요일, 09-28 = 월요일(휴무)
+const cafe = { ...mk(30, '카페코히 가정점', '음식점 > 카페'), week: H('Mo off; Tu-Su 10:00-20:00') };
+assert.ok(L.likelyOpen(cafe, at(12)) && !L.likelyOpen(cafe, at(19, 30)) && !L.likelyOpen(cafe, new Date(2026, 8, 28, 12)));
+assert.ok(L.scoreCandidates([cafe], { ...base, purpose: 'cafe', now: at(12) })[0].reasons.includes('가게 영업시간 확인됨 (오늘 20:00까지)'));
+// 짝짓기: 가까우면서 이름 포함, 멀면 안 붙음
+const ps = [mk(31, '뚜레쥬르 가정점', '음식점 > 간식 > 제과,베이커리'), mk(32, '더벤티 루원시티점', '음식점 > 카페')];
+L.attachHours(ps, [{ name: L.normName('뚜레쥬르'), lat: 37.5671, lng: 126.9791, week: H('24/7') }, { name: '더벤티', lat: 37.6, lng: 126.979, week: H('24/7') }]);
+assert.ok(ps[0].week && !ps[1].week);
+
 // 가챠: 중복 없이 n개, 후보보다 많이 요구하면 있는 만큼
 r = L.scoreCandidates(places, base);
 const g = L.gacha(r, 3);

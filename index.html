@@ -334,6 +334,27 @@ function searchKeyword(keyword, group, pos, radius) {
     }, opts);
   });
 }
+// 가게 실제 영업시간: 오픈스트리트맵에 입력된 곳만 (한국은 적음). 실패하면 업종 추정으로
+async function fetchOsmHours(pos, radius) {
+  const q = `[out:json][timeout:20];nwr["opening_hours"]["name"](around:${radius},${pos.lat.toFixed(5)},${pos.lng.toFixed(5)});out center tags;`;
+  for (const url of ['https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter']) {
+    try {
+      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: AbortSignal.timeout(20000) });
+      if (!r.ok) continue;
+      return (await r.json()).elements
+        .map(e => ({ name: normName(e.tags['name:ko'] || e.tags.name), lat: e.lat ?? e.center?.lat, lng: e.lon ?? e.center?.lon, week: parseHours(e.tags.opening_hours) }))
+        .filter(o => o.week && o.lat != null);
+    } catch {}
+  }
+  return [];
+}
+// 공용 서버가 느려서(10초+) 위치를 정하자마자 미리 받아둠. 질문에 답하는 동안 도착
+const osmCache = new Map();
+function osmHours(pos, radius) {
+  const key = [pos.lat.toFixed(4), pos.lng.toFixed(4), radius].join();
+  if (!osmCache.has(key)) osmCache.set(key, fetchOsmHours(pos, radius).then(r => { if (!r.length) osmCache.delete(key); return r; }));
+  return osmCache.get(key);
+}
 async function fetchPlaces(purpose, pos, radius) {
   const key = [purpose, pos.lat.toFixed(4), pos.lng.toFixed(4), radius].join();
   if (cache.has(key)) return cache.get(key);
@@ -462,7 +483,9 @@ async function roll() {
   S.step = 'loading'; render();
   const started = Date.now();
   try {
-    const places = await fetchPlaces(S.purpose, S.origin, TRAVEL[settings.mode].radius);
+    const radius = TRAVEL[settings.mode].radius;
+    const [places, osm] = await Promise.all([fetchPlaces(S.purpose, S.origin, radius), Promise.race([osmHours(S.origin, radius), new Promise(r => setTimeout(() => r([]), 3000))])]);
+    attachHours(places, osm);
     const { excludes, likes } = collectPrefs();
     S.seen = new Set();
     S.cands = scoreCandidates(places, { origin: S.origin, originLabel: S.originLabel, mode: settings.mode, who: S.who, purpose: S.purpose, budget: S.budget, excludes, likes, indoorOnly: S.indoorOnly, now: new Date(), blacklist: new Set(blacklist.map(b => b.id)), seen: S.seen });
@@ -505,7 +528,7 @@ $body.addEventListener('click', e => {
   if (d.people) { S.people = Math.min(20, Math.max(2, S.people + +d.people)); return render(); }
   if (d.today) { S.today.has(d.today) ? S.today.delete(d.today) : S.today.add(d.today); return render(); }
   if ('indoor' in d) { S.indoorOnly = !S.indoorOnly; return render(); }
-  if (d.go === 'next') { S.step = STEPS[STEPS.indexOf(S.step) + 1]; if (S.step === 'who') showPoint(S.origin); return render(); }
+  if (d.go === 'next') { S.step = STEPS[STEPS.indexOf(S.step) + 1]; if (S.step === 'who') { showPoint(S.origin); osmHours(S.origin, TRAVEL[settings.mode].radius); } return render(); }
   if (d.go === 'back') { S.step = STEPS[STEPS.indexOf(S.step) - 1]; return render(); }
   if (d.go === 'roll') return roll();
   if (d.go === 'reroll') { S.rerollsLeft--; return draw(); }

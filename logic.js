@@ -106,13 +106,81 @@ function typicalHours(place) {
   return hit ? [hit[1], hit[2]] : [10, 22];
 }
 // now: Date. 문 닫기 1시간 전까지만 추천
+// place.week(가게 실제 영업시간, OSM에서 찾은 경우)가 있으면 그걸로, 없으면 업종 추정으로
 function likelyOpen(place, now, marginMin = 60) {
+  if (place.week) return !!openRange(place.week, now, marginMin);
   const [o, c] = typicalHours(place);
   if (c - o >= 24) return true;
   const t = now.getHours() * 60 + now.getMinutes();
   return [t, t + 1440].some(x => x >= o * 60 && x + marginMin <= c * 60);
 }
 const hhmm = h => `${h % 24}시`;
+const clock = m => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+function openText(place, now) {
+  if (place.week) {
+    const r = openRange(place.week, now, 0);
+    return r[1] - r[0] >= 1440 ? '가게 영업시간 확인됨 (24시간)' : `가게 영업시간 확인됨 (오늘 ${clock(r[1])}까지)`;
+  }
+  const [o, c] = typicalHours(place);
+  return c - o >= 24 ? '24시간 영업하는 업종' : `지금 영업 시간대 (보통 ${hhmm(o)}~${hhmm(c)}, 방문 전 확인)`;
+}
+
+// OSM opening_hours 문자열 → 요일별(월=0) [시작분, 끝분] 목록. 끝이 1440 넘으면 다음날 새벽까지.
+// ponytail: 흔한 형식만 (Mo-Fr 09:00-21:00; Sa,Su off; 24/7). 못 읽으면 null → 업종 추정으로
+const DAYS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+function parseHours(str) {
+  if (!str) return null;
+  str = str.trim();
+  if (str === '24/7') return DAYS.map(() => [[0, 1440]]);
+  const week = DAYS.map(() => null);
+  for (let rule of str.split(';').map(r => r.trim()).filter(Boolean)) {
+    if (/[\[\]"]/.test(rule)) return null;
+    let m = rule.match(/^([A-Za-z,\- ]+?)\s+(.+)$/);
+    let days = DAYS.map((_, i) => i), times = rule;
+    if (m && /^[A-Z]/.test(m[1])) {
+      times = m[2]; days = [];
+      for (const part of m[1].split(',').map(x => x.trim())) {
+        if (part === 'PH' || part === 'SH') continue;
+        const [a, b] = part.split('-').map(d => DAYS.indexOf(d));
+        if (a < 0 || (b !== undefined && b < 0)) return null;
+        for (let i = a; ; i = (i + 1) % 7) { days.push(i); if (b === undefined || i === b) break; }
+      }
+      if (!days.length) continue; // 공휴일 규칙만 있으면 무시
+    } else if (/^(PH|SH)\b/.test(rule)) continue;
+    let ranges;
+    if (/^(off|closed)$/.test(times)) ranges = [];
+    else {
+      ranges = [];
+      for (const t of times.split(',')) {
+        const tm = t.trim().match(/^(\d\d?):(\d\d)-(\d\d?):(\d\d)$/);
+        if (!tm) return null;
+        const a = tm[1] * 60 + +tm[2]; let b = tm[3] * 60 + +tm[4];
+        if (b <= a) b += 1440;
+        ranges.push([a, b]);
+      }
+    }
+    days.forEach(d => week[d] = ranges);
+  }
+  return week.every(w => w === null) ? null : week.map(w => w || []);
+}
+// 지금 열려 있고 marginMin분 이상 남은 구간 [시작, 끝] (어제 밤부터 이어진 구간 포함), 없으면 null
+function openRange(week, now, marginMin) {
+  const d = (now.getDay() + 6) % 7, t = now.getHours() * 60 + now.getMinutes();
+  for (const r of week[d]) if (r[0] <= t && t + marginMin <= r[1]) return r;
+  for (const r of week[(d + 6) % 7]) if (r[1] > 1440 && t + 1440 + marginMin <= r[1]) return [r[0] - 1440, r[1] - 1440];
+  return null;
+}
+
+// 카카오 가게 ↔ OSM 가게 짝짓기: 80m 안 + 이름이 서로 포함
+const normName = s => (s || '').toLowerCase().replace(/[\s()·.\-&]/g, '');
+function attachHours(places, osm) {
+  for (const p of places) {
+    const a = normName(p.name);
+    const hit = osm.find(o => o.name.length >= 2 && (a.includes(o.name) || o.name.includes(a)) && distanceM(p, o) < 80);
+    if (hit) p.week = hit.week;
+  }
+  return places;
+}
 
 // 놀거리 키워드 검색에 딸려오는 엉뚱한 곳 거르기 (보드·만화카페는 '음식점 > 카페 > 테마카페'라 살림)
 const NOT_PLAY = ['키즈카페', '골동품', '액자', '표구', '화랑', '수예', '자수', '아카데미', '학원', '체육관', '스포츠센터', '교통', '운송'];
@@ -144,7 +212,7 @@ function scoreCandidates(places, opts) {
 
     let w = 1.3 - 0.6 * Math.min(1, dist / TRAVEL[opts.mode].radius); // 가까울수록 약간 우대
     const reasons = [`${opts.originLabel || '출발지'}에서 ${TRAVEL[opts.mode].word} 약 ${travelMinutes(dist, opts.mode)}분`];
-    if (opts.now) { const [o, c] = typicalHours(p); reasons.push(c - o >= 24 ? '24시간 영업하는 업종' : `지금 영업 시간대 (보통 ${hhmm(o)}~${hhmm(c)}, 방문 전 확인)`); }
+    if (opts.now) reasons.push(openText(p, opts.now));
 
     if (food) for (const l of opts.likes) {
       if (hasTag(p, l.tag)) { w += 2; reasons.push(`${l.by}${iga(l.by)} 좋아하는 '${l.tag}'`); break; }
@@ -188,4 +256,4 @@ function gacha(cands, n, rand = Math.random) {
   return picked;
 }
 
-if (typeof module !== 'undefined') module.exports = { typicalHours, likelyOpen, iga, TAGS, PURPOSES, TRAVEL, toPlace, distanceM, travelMinutes, midpoint, hasTag, playKind, scoreCandidates, gacha };
+if (typeof module !== 'undefined') module.exports = { parseHours, openRange, attachHours, normName, typicalHours, likelyOpen, iga, TAGS, PURPOSES, TRAVEL, toPlace, distanceM, travelMinutes, midpoint, hasTag, playKind, scoreCandidates, gacha };
