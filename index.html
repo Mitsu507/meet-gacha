@@ -410,8 +410,8 @@ const VIEWS = {
   },
   loading() { return '<div class="capsule">🎁</div><p class="sub" style="text-align:center">근처 장소를 뒤지는 중...</p>'; },
   result() {
-    if (!S.shown.length) return `<h2>조건에 맞는 곳이 없어요 😢</h2><p class="sub">이동 거리를 늘리거나 제외 조건을 줄여보세요.</p><div class="row"><button class="btn" data-go="filter">조건 바꾸기</button><button class="btn main" data-go="restart">처음부터</button></div>`;
-    return `<h2>🎉 오늘의 후보 ${S.shown.length}곳</h2><p class="sub">근처 ${S.total}곳 중에서 뽑았어요 · 남은 후보 ${S.cands.length}곳</p>`
+    if (!S.shown.length) return `<h2>조건에 맞는 곳이 없어요 😢</h2><p class="sub">지금 시간에 문 연 곳이 없거나 조건이 너무 많아요. 이동 거리를 늘리거나 제외 조건을 줄여보세요.</p><div class="row"><button class="btn" data-go="filter">조건 바꾸기</button><button class="btn main" data-go="restart">처음부터</button></div>`;
+    return `<h2>🎉 오늘의 후보 ${S.shown.length}곳</h2><p class="sub">지금 영업 시간대인 근처 ${S.total}곳 중에서 뽑았어요 · 남은 후보 ${S.cands.length}곳</p>`
       + S.shown.map((c, i) => {
         const p = c.place, cat = p.category.split(' > ').slice(-1)[0];
         return `<div class="card" data-focus="${i}"><div class="hd"><span class="num">${i + 1}</span><div><h3>${esc(p.name)}</h3><span class="kind">${esc(cat)} · ${(c.dist / 1000).toFixed(1)}km · ${esc(p.address)}</span></div></div>`
@@ -465,7 +465,7 @@ async function roll() {
     const places = await fetchPlaces(S.purpose, S.origin, TRAVEL[settings.mode].radius);
     const { excludes, likes } = collectPrefs();
     S.seen = new Set();
-    S.cands = scoreCandidates(places, { origin: S.origin, originLabel: S.originLabel, mode: settings.mode, who: S.who, purpose: S.purpose, budget: S.budget, excludes, likes, indoorOnly: S.indoorOnly, blacklist: new Set(blacklist.map(b => b.id)), seen: S.seen });
+    S.cands = scoreCandidates(places, { origin: S.origin, originLabel: S.originLabel, mode: settings.mode, who: S.who, purpose: S.purpose, budget: S.budget, excludes, likes, indoorOnly: S.indoorOnly, now: new Date(), blacklist: new Set(blacklist.map(b => b.id)), seen: S.seen });
     S.total = S.cands.length;
     S.rerollsLeft = settings.rerolls;
     await new Promise(r => setTimeout(r, Math.max(0, 1000 - (Date.now() - started)))); // 두근두근 연출

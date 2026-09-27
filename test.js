@@ -52,6 +52,15 @@ assert.deepStrictEqual(L.scoreCandidates(noise, { ...base, purpose: 'play' }).ma
 // 밥 먹으러 갈 땐 술집 제외
 assert.strictEqual(L.scoreCandidates([mk(15, '가을주막', '음식점 > 술집 > 호프,요리주점')], base).length, 0);
 
+// 영업시간 추정: 밤 11시엔 카페·밥집 빠지고 술집·PC방은 남음, 술집은 새벽 1시에도 OK, 문 닫기 1시간 전이면 제외
+const at = (h, m = 0) => new Date(2026, 8, 27, h, m);
+const night = [mk(20, '스타벅스', '음식점 > 카페 > 커피전문점 > 스타벅스'), mk(21, '가마솥순대국', '음식점 > 한식 > 국밥'), mk(22, '역전할머니맥주', '음식점 > 술집 > 호프,요리주점'), mk(23, '배틀존 PC', '가정,생활 > 여가시설 > 게임방,PC방')];
+assert.deepStrictEqual(night.filter(p => L.likelyOpen(p, at(23))).map(p => p.name), ['역전할머니맥주', '배틀존 PC']);
+assert.deepStrictEqual(night.filter(p => L.likelyOpen(p, at(1))).map(p => p.name), ['역전할머니맥주', '배틀존 PC']);
+assert.ok(L.likelyOpen(night[0], at(20, 59)) && !L.likelyOpen(night[0], at(21, 1))); // 카페 22시 마감
+assert.ok(!L.likelyOpen(night[2], at(12))); // 술집 낮엔 X
+assert.strictEqual(L.scoreCandidates(night, { ...base, purpose: 'cafe', now: at(23) }).length, 2);
+
 // 가챠: 중복 없이 n개, 후보보다 많이 요구하면 있는 만큼
 r = L.scoreCandidates(places, base);
 const g = L.gacha(r, 3);

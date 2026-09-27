@@ -84,6 +84,36 @@ function playKind(place) {
 
 const OUTDOOR = ['야외', '캠핑', '루프탑', '공원', '해수욕장'];
 
+// ponytail: 카카오 API엔 영업시간이 없어서 업종별 "보통" 영업시간으로 추정 (정기휴무·개별 시간은 모름).
+// 정확히 하려면 구글 Places(영업시간 제공) 연동 필요. [이름·카테고리 단어, 여는 시각, 닫는 시각(24 넘으면 다음날 새벽)]
+const HOURS = [
+  [/24시|24H|무인|PC방|피씨방|찜질방|사우나|뽑기/i, 0, 24],
+  [/술집|주점|호프|포차|이자카야|바$|와인|칵테일|맥주|막걸리/, 17, 26],
+  [/노래/, 12, 28],
+  [/당구|스크린골프|골프존|영화|CGV|메가박스|롯데시네마/, 10, 26],
+  [/볼링|오락실|보드|만화카페|룸카페|방탈출|스크린야구|VR|다트|탁구|클라이밍|트램폴린|롤러|인라인|사격|양궁|낚시/, 11, 24],
+  [/공방|공예|도자기|아쿠아리움|파티룸|공간대여/, 11, 20],
+  [/국밥|해장국|순대국|감자탕/, 7, 23],
+  [/분식|김밥/, 9, 21],
+  [/패스트푸드|햄버거|맥도날드|버거킹|롯데리아|KFC|맘스터치/i, 9, 23],
+  [/치킨|족발|보쌈|고기|삼겹|갈비|곱창|막창|양꼬치/, 16, 24],
+  [/카페|커피|디저트|베이커리|빵|제과|빙수/, 9, 22],
+  [/음식점/, 11, 22],
+];
+function typicalHours(place) {
+  const text = place.name + ' ' + place.category;
+  const hit = HOURS.find(([re]) => re.test(text));
+  return hit ? [hit[1], hit[2]] : [10, 22];
+}
+// now: Date. 문 닫기 1시간 전까지만 추천
+function likelyOpen(place, now, marginMin = 60) {
+  const [o, c] = typicalHours(place);
+  if (c - o >= 24) return true;
+  const t = now.getHours() * 60 + now.getMinutes();
+  return [t, t + 1440].some(x => x >= o * 60 && x + marginMin <= c * 60);
+}
+const hhmm = h => `${h % 24}시`;
+
 // 놀거리 키워드 검색에 딸려오는 엉뚱한 곳 거르기 (보드·만화카페는 '음식점 > 카페 > 테마카페'라 살림)
 const NOT_PLAY = ['키즈카페', '골동품', '액자', '표구', '화랑', '수예', '자수', '아카데미', '학원', '체육관', '스포츠센터', '교통', '운송'];
 function isPlay(place) {
@@ -109,10 +139,12 @@ function scoreCandidates(places, opts) {
     if (food && excludedTags.some(tag => hasTag(p, tag))) continue;
     if (opts.purpose === 'play' && !isPlay(p)) continue;
     if (opts.purpose === 'meal' && catTokens(p.category).includes('술집')) continue; // 카카오는 술집도 음식점(FD6)
+    if (opts.now && !likelyOpen(p, opts.now)) continue;
     if (opts.indoorOnly && OUTDOOR.some(w => (p.name + p.category).includes(w))) continue;
 
     let w = 1.3 - 0.6 * Math.min(1, dist / TRAVEL[opts.mode].radius); // 가까울수록 약간 우대
     const reasons = [`${opts.originLabel || '출발지'}에서 ${TRAVEL[opts.mode].word} 약 ${travelMinutes(dist, opts.mode)}분`];
+    if (opts.now) { const [o, c] = typicalHours(p); reasons.push(c - o >= 24 ? '24시간 영업하는 업종' : `지금 영업 시간대 (보통 ${hhmm(o)}~${hhmm(c)}, 방문 전 확인)`); }
 
     if (food) for (const l of opts.likes) {
       if (hasTag(p, l.tag)) { w += 2; reasons.push(`${l.by}${iga(l.by)} 좋아하는 '${l.tag}'`); break; }
@@ -156,4 +188,4 @@ function gacha(cands, n, rand = Math.random) {
   return picked;
 }
 
-if (typeof module !== 'undefined') module.exports = { iga, TAGS, PURPOSES, TRAVEL, toPlace, distanceM, travelMinutes, midpoint, hasTag, playKind, scoreCandidates, gacha };
+if (typeof module !== 'undefined') module.exports = { typicalHours, likelyOpen, iga, TAGS, PURPOSES, TRAVEL, toPlace, distanceM, travelMinutes, midpoint, hasTag, playKind, scoreCandidates, gacha };
