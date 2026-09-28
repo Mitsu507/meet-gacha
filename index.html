@@ -14,7 +14,8 @@
   @media (prefers-color-scheme: dark) {
     :root { --bg: #111318; --panel: #1b1e26; --soft: #252933; --text: #eceef2; --muted: #9aa0ab; --line: #2f3440; --accent-soft: #3a2621; --shadow: 0 -6px 24px rgba(0,0,0,.5); }
   }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; scrollbar-width: none; }
+  *::-webkit-scrollbar { display: none; } /* 스크롤바 숨김 (스크롤은 됨) */
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; overflow: hidden; }
   button { font: inherit; color: inherit; cursor: pointer; }
   #map { position: fixed; inset: 0 0 var(--nav) 0; z-index: 0; }
@@ -137,7 +138,7 @@ const store = {
   get(k, d) { try { return JSON.parse(localStorage.getItem('mg_' + k)) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem('mg_' + k, JSON.stringify(v)); } catch {} },
 };
-let friends = store.get('friends', []);          // [{id, name, likes:[], dislikes:[]}]
+let friends = store.get('friends', []);          // [{id, name, likes:[], dislikes:[], home?:{lat, lng, name}}]
 let blacklist = store.get('black', []);          // [{id, name}]
 let settings = Object.assign({ mode: 'transit', count: 4, rerolls: 3 }, store.get('settings', {}));
 
@@ -148,7 +149,8 @@ const DEFAULT_POS = { lat: 37.5665, lng: 126.978 }; // 서울시청
 const S = {
   tab: 'gacha', step: 'where',
   origin: DEFAULT_POS, originLabel: '서울시청 (기본)',
-  multi: false, starts: [],             // 중간지점 모드 출발지
+  multi: false, starts: [],             // 중간지점 모드 출발지 (고른 친구들 사는 곳 + 나)
+  midSel: new Set(), meIn: false, myPos: null, // 중간지점에 넣을 친구 id / 나 포함 여부 / GPS 위치
   who: null, people: 2, picked: new Set(), // 선택한 친구 id
   purpose: null, budget: null,
   today: new Set(), indoorOnly: false,
@@ -215,7 +217,8 @@ function init() {
     if (!resultsEl.hidden) return closeResults();
     if (S.tab !== 'gacha' || S.step !== 'where') return;
     const p = { lat: e.latLng.getLat(), lng: e.latLng.getLng() };
-    if (S.multi) addStart(p, `출발지 ${S.starts.length + 1}`); else { setOrigin(p, '선택한 위치'); render(); }
+    if (S.multi) return toast('중간지점은 친구 사는 곳으로 계산해요. 아래에서 친구를 골라주세요');
+    setOrigin(p, '선택한 위치'); render();
   });
   setOrigin(DEFAULT_POS, S.originLabel);
   showPoint(DEFAULT_POS);
@@ -246,10 +249,14 @@ function drawStarts() {
   S.starts.forEach((s, i) => overlay(s, 'start', i + 1));
   if (S.starts.length >= 2) S.starts.forEach(s => layer.push(new kakao.maps.Polyline({ map, path: [LL(s), LL(S.origin)], strokeWeight: 1.5, strokeColor: '#111', strokeStyle: 'dash' })));
 }
-function addStart(p, name) {
-  if (S.starts.length >= 4) return toast('출발지는 최대 4곳까지');
-  S.starts.push({ ...p, name });
-  refreshStarts(); render();
+// 고른 친구들 사는 곳(+ 나)으로 출발지 목록을 다시 만듦
+function computeStarts() {
+  S.starts = [
+    ...(S.meIn && S.myPos ? [{ ...S.myPos, name: '나' }] : []),
+    ...friends.filter(f => S.midSel.has(f.id) && f.home).map(f => ({ lat: f.home.lat, lng: f.home.lng, name: f.name })),
+  ];
+  refreshStarts();
+  if (S.starts.length >= 2) showPoint(S.origin);
 }
 function refreshStarts() {
   if (S.starts.length >= 2) setOrigin(midpoint(S.starts), '중간지점');
@@ -260,7 +267,8 @@ function locate(silent) {
   if (!navigator.geolocation) { if (!silent) toast('이 기기는 위치를 지원하지 않아요'); return; }
   navigator.geolocation.getCurrentPosition(p => {
     const pos = { lat: p.coords.latitude, lng: p.coords.longitude };
-    if (S.multi && S.step === 'where') addStart(pos, '내 위치');
+    S.myPos = pos;
+    if (S.multi && S.step === 'where') { if (!silent) { S.meIn = true; computeStarts(); render(); } }
     else { setOrigin(pos, '현재 위치'); showPoint(pos, 6); render(); }
   }, () => { if (!silent) toast('위치 권한이 없어요. 검색하거나 지도를 눌러 정해주세요'); }, { enableHighAccuracy: true, timeout: 8000 });
 }
@@ -304,7 +312,7 @@ function search(q, page = 1) {
 function pickSearch(pos, name) {
   qEl.value = ''; $('qClear').hidden = true; closeResults(); qEl.blur();
   showPoint(pos, 5);
-  if (S.tab === 'gacha' && S.step === 'where' && S.multi) return addStart(pos, name);
+  if (S.tab === 'gacha' && S.step === 'where' && S.multi) return; // 중간지점 모드에선 지도만 이동
   setOrigin(pos, name);
   if (S.tab === 'gacha' && S.step !== 'result') S.step = 'where';
   render();
@@ -385,12 +393,27 @@ const STEPS = ['where', 'who', 'purpose', 'budget', 'filter'];
 const stepHead = (i, title, sub) => `<div class="step">STEP ${i}/5</div><h2>${title}</h2><p class="sub">${sub}</p>`;
 const nav2 = (canNext, nextLabel = '다음') => `<div class="row"><button class="btn" data-go="back">이전</button><button class="btn main" data-go="next" ${canNext ? '' : 'disabled'}>${nextLabel}</button></div>`;
 
+// 중간지점: 등록한 친구 목록에서 고르기 (사는 곳이 저장된 친구만)
+function midView() {
+  if (!friends.length) return `<p class="muted">중간지점을 찾으려면 친구를 먼저 등록해주세요. 친구마다 사는 곳을 저장해두면 여기서 고르기만 하면 돼요.</p>`
+    + `<div class="chips"><button class="chip" data-tabgo="friends">＋ 친구 등록하러 가기</button></div>`;
+  const noHome = friends.filter(f => !f.home);
+  return `<div class="label">같이 만나는 사람</div><div class="chips">`
+    + `<button class="chip ${S.meIn ? 'on' : ''}" data-mein>📍 나 (내 위치)</button>`
+    + friends.map(f => f.home
+      ? `<button class="chip ${S.midSel.has(f.id) ? 'on' : ''}" data-mid="${f.id}">${esc(f.name)}</button>`
+      : `<button class="chip lock" data-edit="${f.id}">${esc(f.name)} · 🏠 등록</button>`).join('')
+    + `<button class="chip" data-edit="new">＋ 친구</button></div>`
+    + (noHome.length ? `<p class="muted">🏠 사는 곳이 없는 친구는 눌러서 먼저 등록해주세요</p>` : '')
+    + (S.starts.length >= 2 ? `<p class="muted">📍 ${esc(S.starts.map(s => s.name).join(' · '))}의 중간지점</p>` : `<p class="muted">2명 이상 골라주세요</p>`);
+}
+
 const VIEWS = {
   where() {
     const modeBtns = Object.entries(TRAVEL).map(([k, v]) => `<button class="${settings.mode === k ? 'on' : ''}" data-mode="${k}">${v.label}</button>`).join('');
-    return stepHead(1, '어디 근처에서 만나요?', S.multi ? '지도를 누르거나 검색해서 친구들 출발지를 2~4곳 찍어주세요' : '위에서 검색하거나 📍, 지도를 눌러 위치를 정해주세요')
+    return stepHead(1, '어디 근처에서 만나요?', S.multi ? '같이 만날 친구를 고르면 사는 곳의 중간에서 찾아요' : '위에서 검색하거나 📍, 지도를 눌러 위치를 정해주세요')
       + `<div class="seg"><button class="${!S.multi ? 'on' : ''}" data-multi="0">한 곳 기준</button><button class="${S.multi ? 'on' : ''}" data-multi="1">친구들 중간지점</button></div>`
-      + (S.multi ? `<ul class="pts">${S.starts.map((s, i) => `<li>${i + 1}. ${esc(s.name)}<button class="x" data-rmstart="${i}">✕</button></li>`).join('') || '<li class="muted">아직 출발지가 없어요</li>'}</ul>` : `<p class="muted">📍 ${esc(S.originLabel)}</p>`)
+      + (S.multi ? midView() : `<p class="muted">📍 ${esc(S.originLabel)}</p>`)
       + `<div class="label">이동 거리</div><div class="seg">${modeBtns}</div>`
       + `<div class="row"><button class="btn main" data-go="next" ${S.multi && S.starts.length < 2 ? 'disabled' : ''}>여기서 찾을게요</button></div>`;
   },
@@ -429,7 +452,7 @@ const VIEWS = {
       + `<div class="chips"><button class="chip ${S.indoorOnly ? 'on' : ''}" data-indoor>☔ 실내만 (비·추운 날)</button></div>`
       + `<div class="row"><button class="btn" data-go="back">이전</button><button class="btn main" data-go="roll">🎲 가챠 돌리기</button></div>`;
   },
-  loading() { return '<div class="capsule">🎁</div><p class="sub" style="text-align:center">근처 장소를 뒤지는 중...</p>'; },
+  loading() { return '<div class="capsule">🎁</div><p class="sub" style="text-align:center">장소 고르는 중입니다...</p>'; },
   result() {
     if (!S.shown.length) return `<h2>조건에 맞는 곳이 없어요 😢</h2><p class="sub">지금 시간에 문 연 곳이 없거나 조건이 너무 많아요. 이동 거리를 늘리거나 제외 조건을 줄여보세요.</p><div class="row"><button class="btn" data-go="filter">조건 바꾸기</button><button class="btn main" data-go="restart">처음부터</button></div>`;
     return `<h2>🎉 오늘의 후보 ${S.shown.length}곳</h2><p class="sub">지금 영업 시간대인 근처 ${S.total}곳 중에서 뽑았어요 · 남은 후보 ${S.cands.length}곳</p>`
@@ -445,17 +468,22 @@ const VIEWS = {
 
 const TABS = {
   friends() {
-    return `<h2>👥 친구 취향</h2><p class="sub">한 번 등록하면 "누구랑?"에서 이름만 골라도 취향이 적용돼요</p>`
-      + friends.map(f => `<div class="item"><div><b>${esc(f.name)}</b><span class="muted">${f.likes.length ? '👍 ' + f.likes.join(', ') : ''} ${f.dislikes.length ? '🙅 ' + f.dislikes.join(', ') : ''}</span></div><div><button class="chip" data-edit="${f.id}">수정</button> <button class="x" data-delf="${f.id}">✕</button></div></div>`).join('')
+    return `<h2>👥 친구</h2><p class="sub">한 번 등록하면 "누구랑?"에서 이름만 골라도 취향이 적용되고, 사는 곳으로 중간지점을 찾아요</p>`
+      + friends.map(f => `<div class="item"><div><b>${esc(f.name)}</b><span class="muted">${f.home ? '🏠 ' + esc(f.home.name) + ' ' : ''}${f.likes.length ? '👍 ' + f.likes.join(', ') : ''} ${f.dislikes.length ? '🙅 ' + f.dislikes.join(', ') : ''}</span></div><div><button class="chip" data-edit="${f.id}">수정</button> <button class="x" data-delf="${f.id}">✕</button></div></div>`).join('')
       + `<div class="row"><button class="btn main" data-edit="new">＋ 친구 추가</button></div>`;
   },
   edit() {
     const f = S.editing;
     const chips = (field) => TAG_NAMES.map(t => `<button class="chip ${f[field].includes(t) ? 'on' : ''}" data-ftag="${field}" data-t="${t}">${t}</button>`).join('');
     return `<h2>${f.id ? '친구 수정' : '친구 추가'}</h2><div class="label">이름</div><input class="txt" id="fname" value="${esc(f.name)}" placeholder="예: 민수">`
+      + `<div class="label">🏠 사는 곳 (중간지점 찾을 때 써요)</div>`
+      + (f.home ? `<div class="item"><span>${esc(f.home.name)}</span><button class="x" data-homeclear>✕</button></div>`
+        : `<div class="bar"><input class="txt" id="fhome" value="${esc(S.homeQ || '')}" placeholder="동네, 역, 아파트 이름 (예: 신림역)" enterkeyhint="search"><button class="chip" style="flex:none" data-homesearch>검색</button></div>`
+          + (S.homeResults || []).map((r, i) => `<button class="item" style="width:100%;border:0;border-bottom:1px solid var(--line);background:none;text-align:left" data-homepick="${i}"><span><b>${esc(r.name)}</b><span class="muted">${esc(r.addr)}</span></span></button>`).join(''))
+      + `<p class="muted">동네 정도만 적어도 충분해요. 이 기기에만 저장돼요.</p>`
       + `<div class="label">👍 좋아하는 것</div><div class="chips">${chips('likes')}</div>`
       + `<div class="label">🙅 싫어하는 것 / 알레르기 (항상 제외)</div><div class="chips">${chips('dislikes')}</div>`
-      + `<div class="row"><button class="btn" data-tabgo="friends">취소</button><button class="btn main" data-savef>저장</button></div>`;
+      + `<div class="row"><button class="btn" data-tabgo="${S.editFrom === 'gacha' ? 'gacha' : 'friends'}">취소</button><button class="btn main" data-savef>저장</button></div>`;
   },
   black() {
     return `<h2>🚫 블랙리스트</h2><p class="sub">여기 있는 곳은 가챠에 다시 안 나와요 (나만 적용)</p>`
@@ -515,6 +543,19 @@ function drawMarkers() {
   if (S.shown.length) map.setBounds(b, 90, 40, SNAPS[snapName]() + 30, 40);
 }
 
+// 친구 사는 곳 검색 (카카오 장소 검색)
+function homeSearch() {
+  const q = $('fhome').value.trim();
+  S.editing.name = $('fname').value; S.homeQ = q;
+  if (!q) return toast('동네나 역 이름을 입력해주세요');
+  ps.keywordSearch(q, (data, status) => {
+    S.homeResults = status === kakao.maps.services.Status.OK ? data.map(d => ({ lat: +d.y, lng: +d.x, name: d.place_name, addr: d.road_address_name || d.address_name })) : [];
+    if (!S.homeResults.length) toast('검색 결과가 없어요');
+    if (S.tab === 'edit') render();
+  }, { size: 8 });
+}
+$body.addEventListener('keydown', e => { if (e.target.id === 'fhome' && e.key === 'Enter') { e.preventDefault(); homeSearch(); } });
+
 // ---------- 이벤트 (위임) ----------
 $body.addEventListener('click', e => {
   const t = e.target.closest('button, .card');
@@ -522,13 +563,19 @@ $body.addEventListener('click', e => {
   const d = t.dataset;
   if (d.set) { S[d.set] = d.val; if (d.set === 'who' && d.val !== 'friends') S.picked.clear(); return render(); }
   if (d.mode) { settings.mode = d.mode; store.set('settings', settings); setOrigin(S.origin, S.originLabel); return render(); }
-  if (d.multi) { S.multi = d.multi === '1'; if (!S.multi) { S.starts = []; clearLayer(); } return render(); }
-  if (d.rmstart) { S.starts.splice(+d.rmstart, 1); refreshStarts(); return render(); }
+  if (d.multi) { S.multi = d.multi === '1'; if (S.multi) computeStarts(); else { S.starts = []; clearLayer(); } return render(); }
+  if (d.mid) { S.midSel.has(d.mid) ? S.midSel.delete(d.mid) : S.midSel.add(d.mid); computeStarts(); return render(); }
+  if ('mein' in d) {
+    if (!S.meIn && !S.myPos) return locate(false); // 위치를 받으면 자동으로 켜짐
+    S.meIn = !S.meIn; computeStarts(); return render();
+  }
   if (d.pick) { S.picked.has(d.pick) ? S.picked.delete(d.pick) : S.picked.add(d.pick); S.people = Math.max(S.people, S.picked.size + 1); return render(); }
   if (d.people) { S.people = Math.min(20, Math.max(2, S.people + +d.people)); return render(); }
   if (d.today) { S.today.has(d.today) ? S.today.delete(d.today) : S.today.add(d.today); return render(); }
   if ('indoor' in d) { S.indoorOnly = !S.indoorOnly; return render(); }
-  if (d.go === 'next') { S.step = STEPS[STEPS.indexOf(S.step) + 1]; if (S.step === 'who') { showPoint(S.origin); osmHours(S.origin, TRAVEL[settings.mode].radius); } return render(); }
+  if (d.go === 'next') {
+    if (S.step === 'where' && S.multi && S.midSel.size) { S.who = 'friends'; S.midSel.forEach(id => S.picked.add(id)); S.people = Math.max(S.people, S.starts.length, S.midSel.size + 1); } // 중간지점 친구 = 같이 가는 친구
+    S.step = STEPS[STEPS.indexOf(S.step) + 1]; if (S.step === 'who') { showPoint(S.origin); osmHours(S.origin, TRAVEL[settings.mode].radius); } return render(); }
   if (d.go === 'back') { S.step = STEPS[STEPS.indexOf(S.step) - 1]; return render(); }
   if (d.go === 'roll') return roll();
   if (d.go === 'reroll') { S.rerollsLeft--; return draw(); }
@@ -543,9 +590,12 @@ $body.addEventListener('click', e => {
   if (d.focus) { if (!e.target.closest('a')) map.panTo(LL(S.shown[+d.focus].place)); return; }
   // 탭 화면
   if (d.tabgo) { S.tab = d.tabgo; return render(); }
-  if (d.edit) { const f = friends.find(x => x.id === d.edit); S.editing = f ? structuredClone(f) : { id: '', name: '', likes: [], dislikes: [] }; S.tab = 'edit'; return render(); }
+  if (d.edit) { const f = friends.find(x => x.id === d.edit); S.editing = f ? structuredClone(f) : { id: '', name: '', likes: [], dislikes: [] }; S.editFrom = S.tab; S.homeQ = ''; S.homeResults = []; S.tab = 'edit'; return render(); }
+  if ('homesearch' in d) return homeSearch();
+  if (d.homepick) { const r = S.homeResults[+d.homepick]; S.editing.name = $('fname').value; S.editing.home = { lat: r.lat, lng: r.lng, name: r.name }; S.homeResults = []; return render(); }
+  if ('homeclear' in d) { S.editing.name = $('fname').value; delete S.editing.home; return render(); }
   if (d.ftag) {
-    S.editing.name = $('fname').value;
+    S.editing.name = $('fname').value; if ($('fhome')) S.homeQ = $('fhome').value;
     const f = S.editing, other = d.ftag === 'likes' ? 'dislikes' : 'likes', arr = f[d.ftag];
     arr.includes(d.t) ? arr.splice(arr.indexOf(d.t), 1) : (arr.push(d.t), f[other] = f[other].filter(x => x !== d.t));
     return render();
@@ -554,9 +604,11 @@ $body.addEventListener('click', e => {
     const f = S.editing; f.name = $('fname').value.trim();
     if (!f.name) return toast('이름을 입력해주세요');
     if (f.id) friends = friends.map(x => x.id === f.id ? f : x); else friends.push({ ...f, id: Date.now().toString(36) });
-    store.set('friends', friends); S.tab = 'friends'; return render();
+    store.set('friends', friends);
+    if (S.editFrom === 'gacha') { if (f.home) S.midSel.add(f.id || friends[friends.length - 1].id); S.tab = 'gacha'; computeStarts(); } else S.tab = 'friends'; // 중간지점에서 왔으면 바로 돌아가기
+    return render();
   }
-  if (d.delf) { if (!confirm('이 친구를 삭제할까요?')) return; friends = friends.filter(x => x.id !== d.delf); S.picked.delete(d.delf); store.set('friends', friends); return render(); }
+  if (d.delf) { if (!confirm('이 친구를 삭제할까요?')) return; friends = friends.filter(x => x.id !== d.delf); S.picked.delete(d.delf); S.midSel.delete(d.delf); computeStarts(); store.set('friends', friends); return render(); }
   if (d.unban) { blacklist = blacklist.filter(b => b.id !== d.unban); store.set('black', blacklist); return render(); }
   if (d.setting) { settings[d.setting] = isNaN(d.v) ? d.v : +d.v; store.set('settings', settings); setOrigin(S.origin, S.originLabel); return render(); }
 });
