@@ -3,23 +3,26 @@
 // 요청 정보는 전부 GitHub Secrets 에서 읽음 → 코드/로그에 토큰이 남지 않음.
 //
 // 필요한 Secrets
-//   CRACK_ATTEND_URL     출석 버튼 누를 때 나가는 요청 주소 (DevTools Network 탭에서 복사)
 //   CRACK_TOKEN          로그인 토큰 (Authorization 헤더의 "Bearer " 뒤 값)
 // 선택 Secrets
+//   CRACK_ATTEND_URL     기본: crack-api.wrtn.ai/.../reward-cards/check-in
 //   CRACK_ATTEND_METHOD  기본 POST
 //   CRACK_ATTEND_BODY    요청 본문(JSON 문자열). 없으면 본문 없이 보냄
 //   CRACK_EXTRA_HEADERS  추가 헤더(JSON 객체 문자열). 예: {"platform":"web"}
 
 const env = (k, d = '') => (process.env[k] ?? '').trim() || d;
 
-const url = env('CRACK_ATTEND_URL');
+const url = env(
+  'CRACK_ATTEND_URL',
+  'https://crack-api.wrtn.ai/crack-cash/cash/reward-cards/check-in',
+);
 const token = env('CRACK_TOKEN');
 const method = env('CRACK_ATTEND_METHOD', 'POST').toUpperCase();
 const body = env('CRACK_ATTEND_BODY');
 const extraHeaders = env('CRACK_EXTRA_HEADERS');
 
-if (!url || !token) {
-  console.error('❌ CRACK_ATTEND_URL / CRACK_TOKEN Secret 이 비어 있어요.');
+if (!token) {
+  console.error('❌ CRACK_TOKEN Secret 이 비어 있어요.');
   process.exit(1);
 }
 
@@ -52,7 +55,7 @@ async function attendOnce() {
     body: body && method !== 'GET' ? body : undefined,
   });
   const text = await res.text();
-  return { status: res.status, text: text.slice(0, 300) };
+  return { status: res.status, text: text.slice(0, 1000) };
 }
 
 for (let attempt = 1; attempt <= 3; attempt++) {
@@ -70,7 +73,15 @@ for (let attempt = 1; attempt <= 3; attempt++) {
   console.log(`[${kst()}] ${attempt}번째 시도 → HTTP ${r.status} ${safe}`);
 
   if (r.status >= 200 && r.status < 300) {
-    console.log('✅ 출석 완료');
+    // 응답 예: {"result":"SUCCESS","data":{"granted":true,"quantity":350,...}}
+    // granted:false = 오늘 이미 받음
+    let data = {};
+    try {
+      data = JSON.parse(r.text).data ?? {};
+    } catch {}
+    if (data.granted === true) console.log(`✅ 출석 완료 (+${data.quantity ?? '?'} 크래커)`);
+    else if (data.granted === false) console.log('✅ 오늘은 이미 출석되어 있어요');
+    else console.log('✅ 요청 성공');
     process.exit(0);
   }
   if (ALREADY.test(r.text)) {
