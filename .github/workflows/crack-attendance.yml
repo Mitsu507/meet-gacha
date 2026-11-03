@@ -1,0 +1,30 @@
+name: 크랙 매일 출석
+
+on:
+  schedule:
+    # 초기화(한국시간 00:00) + 10분 = 한국시간 00:10 = UTC 15:10
+    # 초기화 시각이 다르면 여기만 바꾸면 됨 (UTC = 한국시간 - 9시간)
+    - cron: '10 15 * * *'
+  workflow_dispatch: # Actions 탭에서 "Run workflow" 로 바로 테스트
+
+concurrency:
+  group: crack-attendance
+  cancel-in-progress: false
+
+jobs:
+  attend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 출석
+        run: node crack-attendance/attend.mjs
+        env:
+          CRACK_ATTEND_URL: ${{ secrets.CRACK_ATTEND_URL }}
+          CRACK_TOKEN: ${{ secrets.CRACK_TOKEN }}
+          CRACK_ATTEND_METHOD: ${{ secrets.CRACK_ATTEND_METHOD }}
+          CRACK_ATTEND_BODY: ${{ secrets.CRACK_ATTEND_BODY }}
+          CRACK_EXTRA_HEADERS: ${{ secrets.CRACK_EXTRA_HEADERS }}
